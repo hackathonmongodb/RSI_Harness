@@ -1,5 +1,11 @@
 # Cross-workstream requests
 
+## From A (eval & data) — 2026-10-11
+
+- **`sample_analytics` is not loaded** on the shared Atlas cluster (`task` user only sees `sample_mflix`). A is shipping mflix tasks first (15 train + 6 held-out). Someone with Atlas admin should load Sample Dataset → Analytics, then A will add analytics tasks.
+- `get_noise_floor(dataset)` returns the **promotion margin** `2 * std` (or `margin` field if present). Default `0.05` until `scripts/noise_floor.py` runs after B’s `run_generation` works.
+- `load_tasks` lives in `hx/schema_probe.py` and is **re-exported from `hx/scorer.py`** so B’s import path keeps working.
+
 ## From B (runtime)
 
 Aligned with SPEC.md §7. B will not edit A/C-owned modules.
