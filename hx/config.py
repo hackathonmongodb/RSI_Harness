@@ -35,4 +35,11 @@ def get_client(role: Role = "admin"):
         )
     from pymongo import MongoClient
 
-    return MongoClient(uri, serverSelectionTimeoutMS=8000)
+    kwargs: dict = {"serverSelectionTimeoutMS": 8000}
+    try:
+        import certifi
+
+        kwargs["tlsCAFile"] = certifi.where()
+    except ImportError:
+        pass
+    return MongoClient(uri, **kwargs)
