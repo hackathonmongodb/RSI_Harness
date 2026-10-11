@@ -1,0 +1,18 @@
+[project]
+name = "rsi-harness"
+version = "0.1.0"
+description = "Recursive self-improving agent harness on MongoDB Atlas"
+requires-python = ">=3.11"
+readme = "README.md"
+
+[tool.setuptools.packages.find]
+where = ["src", "."]
+include = ["rsi_harness*", "hx*"]
+
+[tool.pytest.ini_options]
+pythonpath = [".", "src"]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
