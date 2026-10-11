@@ -271,7 +271,10 @@ def _passing_train_outputs(passed_trace_ids: list[str]) -> list[dict[str, Any]]:
 def _meta_model() -> str:
     import os
 
-    return os.environ.get("META_MODEL", "fake-meta")
+    return os.environ.get(
+        "META_MODEL",
+        os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
+    )
 
 
 def propose_edits(harness_id: str, phase: Phase, overview: dict) -> list[Manifest]:

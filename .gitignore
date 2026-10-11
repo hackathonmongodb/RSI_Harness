@@ -6,4 +6,5 @@ __pycache__/
 .DS_Store
 .python-version
 web/node_modules/
+results/
 check_env.py

@@ -99,12 +99,66 @@ def _fill_actuals(parent: GenerationResult, child: GenerationResult, manifest: M
     return manifest.model_copy(update={"actual_fixed": actual_fixed, "actual_regressed": actual_regressed})
 
 
-def evolve(dataset: str, start_harness_id: str, generations: int = 10) -> str:
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def evolve(
+    dataset: str,
+    start_harness_id: str,
+    generations: int | None = None,
+    *,
+    target_score: float | None = None,
+    plateau_limit: int | None = None,
+    stop_info: dict[str, Any] | None = None,
+) -> str:
+    """Run the RSI loop until target accuracy, plateau, or max generations.
+
+    Stop conditions (first hit wins):
+    - train_score >= target_score (default RSI_TARGET_SCORE, 0.85)
+    - no train_score improvement for plateau_limit gens (default RSI_PLATEAU_LIMIT, 2)
+    - generation count hits max (default RSI_MAX_GENERATIONS / ``generations``, 8)
+    """
+    max_gens = int(generations) if generations is not None else _env_int("RSI_MAX_GENERATIONS", 8)
+    max_gens = max(1, max_gens)
+    goal = (
+        float(target_score)
+        if target_score is not None
+        else _env_float("RSI_TARGET_SCORE", 0.85)
+    )
+    plateau_n = (
+        int(plateau_limit)
+        if plateau_limit is not None
+        else _env_int("RSI_PLATEAU_LIMIT", 2)
+    )
+    plateau_n = max(1, plateau_n)
+
     hid = start_harness_id
     start, _ = _load_harness(hid)
     start_gen = start.generation
     rng = random.Random(0)
-    for i in range(1, generations + 1):
+    best_train = float(start.train_score) if start.train_score is not None else -1.0
+    stale = 0
+    stop_reason = "max_generations"
+    gens_run = 0
+
+    for i in range(1, max_gens + 1):
         gen = start_gen + i
         phase = _cadence(gen)
         base = _run_generation(hid, dataset)
@@ -153,11 +207,13 @@ def evolve(dataset: str, start_harness_id: str, generations: int = 10) -> str:
         merged, comps = _load_harness(hid)
         n_rules = sum(1 for c in comps if c.kind == "rule")
         scores = prediction_scores(gen)
+        train = float(merged.train_score or 0.0)
+        gens_run = i
         log.info(
             "gen=%s phase=%s train=%.3f heldout=%.3f tokens=%.1f n_rules=%s promoted=%s rejected=%s pred=%s",
             gen,
             phase,
-            merged.train_score or 0.0,
+            train,
             merged.heldout_score or 0.0,
             merged.tokens_per_task or 0.0,
             n_rules,
@@ -169,5 +225,32 @@ def evolve(dataset: str, start_harness_id: str, generations: int = 10) -> str:
             f"gen={gen} phase={phase} train={merged.train_score} heldout={merged.heldout_score} "
             f"tokens={merged.tokens_per_task} n_rules={n_rules} "
             f"promoted={len(winners)} rejected={len(evaluated) - len(winners)}"
+        )
+
+        if train >= goal:
+            stop_reason = "target_score"
+            break
+        if train > best_train + 1e-9:
+            best_train = train
+            stale = 0
+        else:
+            stale += 1
+            if stale >= plateau_n:
+                stop_reason = "plateau"
+                break
+    else:
+        stop_reason = "max_generations"
+
+    if stop_info is not None:
+        stop_info.update(
+            {
+                "reason": stop_reason,
+                "generations_run": gens_run,
+                "max_generations": max_gens,
+                "target_score": goal,
+                "plateau_limit": plateau_n,
+                "best_train_score": best_train if best_train >= 0 else None,
+                "final_harness_id": hid,
+            }
         )
     return hid

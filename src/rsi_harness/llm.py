@@ -3,12 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from rsi_harness.config import (
-    anthropic_key,
-    anthropic_model,
-    openai_key,
-    openai_model,
-)
+from rsi_harness.config import groq_key, groq_model
 
 
 class LLMError(RuntimeError):
@@ -16,48 +11,22 @@ class LLMError(RuntimeError):
 
 
 def complete(system: str, user: str) -> str:
-    if anthropic_key():
-        return _anthropic(system, user)
-    if openai_key():
-        return _openai(system, user)
-    raise LLMError(
-        "No LLM key set. Add ANTHROPIC_API_KEY or OPENAI_API_KEY to .env so "
-        "natural-language → mongosh generation can run."
+    key = groq_key()
+    if not key:
+        raise LLMError("No LLM key set. Add GROQ_API_KEY to .env.")
+    from openai import OpenAI
+
+    client = OpenAI(api_key=key, base_url="https://api.groq.com/openai/v1")
+    resp = client.chat.completions.create(
+        model=groq_model(),
+        temperature=0,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
     )
-
-
-def _anthropic(system: str, user: str) -> str:
-    from anthropic import Anthropic
-
-    client = Anthropic(api_key=anthropic_key())
-    msg = client.messages.create(
-        model=anthropic_model(),
-        max_tokens=1200,
-        system=system,
-        messages=[{"role": "user", "content": user}],
-    )
-    return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
-
-
-def _openai(system: str, user: str) -> str:
-    import httpx
-
-    r = httpx.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={"Authorization": f"Bearer {openai_key()}"},
-        json={
-            "model": openai_model(),
-            "temperature": 0,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-        },
-        timeout=60,
-    )
-    r.raise_for_status()
-    data: dict[str, Any] = r.json()
-    return data["choices"][0]["message"]["content"]
+    content = resp.choices[0].message.content or ""
+    return content
 
 
 def parse_json_object(text: str) -> dict[str, Any]:

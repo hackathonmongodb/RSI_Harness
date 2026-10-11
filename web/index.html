@@ -68,26 +68,29 @@
   <main>
     <div>
       <section>
-        <h2>1. Speak to Atlas</h2>
-        <textarea id="q" rows="3">Average eval score and guardrail violations grouped by harness version</textarea>
+        <h2>1. Ask the movie database (sample_mflix)</h2>
+        <p class="meta">Uses <strong>ai.mongodb.com</strong> + Atlas <strong>sample_mflix</strong>. Ask about movies in English.</p>
+        <textarea id="q" rows="3">How many movies are in the database?</textarea>
         <div class="row">
-          <span class="chip" data-q="Show the current production harness rules and mutation_reason">production harness</span>
-          <span class="chip" data-q="The 8 lowest scoring eval_runs with task and notes">lowest evals</span>
-          <span class="chip" data-q="Memories tagged long-horizon or demo">memories</span>
+          <span class="chip" data-q="How many movies are in the database?">movie count</span>
+          <span class="chip" data-q="Which movie genres are most common?">top genres</span>
+          <span class="chip" data-q="Tom Hanks movies">Tom Hanks</span>
+          <span class="chip" data-q="Sci-fi movies from 2010">sci-fi 2010</span>
+          <span class="chip" data-q="Highest IMDb movies from 1994">IMDb 1994</span>
         </div>
         <div class="row">
-          <button id="ask">Generate mongosh + run</button>
+          <button id="ask">Ask with MongoDB AI</button>
           <button class="ghost" id="seed">Reseed sandbox</button>
         </div>
         <div class="meta" id="nlmeta"></div>
-        <pre class="mongosh" id="mongosh">// mongosh appears here — this is the required MongoDB NL path</pre>
+        <pre id="acctAnswer" style="color:var(--accent); white-space:pre-wrap;">Plain-English answer appears here…</pre>
+        <pre class="mongosh" id="mongosh">// query used (mongosh)</pre>
         <pre id="results">[]</pre>
       </section>
       <section style="margin-top:18px">
-        <h2>2. Evolve the harness from those metrics</h2>
-        <p class="meta">The evolve loop must query eval_runs through the same NL→MongoDB path, then write a new harness_versions document and promote it.</p>
-        <button class="secondary" id="evolve">Evolve from scores</button>
-        <pre id="evolveOut">waiting…</pre>
+        <h2>2. Agent self-improve (automatic)</h2>
+        <p class="meta">No button — when you ask, the agent evolves the harness with <strong>Groq Llama</strong> until train accuracy hits the target, plateaus, or hits the generation cap.</p>
+        <pre id="evolveOut">evolution status appears here after an ask…</pre>
       </section>
     </div>
     <section>
@@ -122,22 +125,46 @@
           <div class="meta">${(v.rules || []).slice(0,3).join(" · ")}</div>
         </div>`).join("");
     }
+    function renderEvolution(evo) {
+      if (!evo) { $("evolveOut").textContent = "no evolution payload"; return; }
+      if (evo.skipped) {
+        $("evolveOut").textContent = `skipped: ${evo.reason || "n/a"}`;
+        return;
+      }
+      const stop = evo.stop || {};
+      const curve = evo.curve || evo.history || [];
+      const lines = curve
+        .filter(h => h.train_score != null)
+        .map(h =>
+          `gen ${h.generation}  train=${h.train_score}  heldout=${h.heldout_score ?? "—"}  ${h.status || ""}  ${h.harness_id}`
+        );
+      $("evolveOut").textContent =
+        `provider: ${evo.provider || "?"}  improved: ${evo.improved}\n` +
+        `stop: ${stop.reason || "?"} after ${stop.generations_run ?? "?"} gen(s) ` +
+        `(target=${stop.target_score ?? "?"} plateau=${stop.plateau_limit ?? "?"})\n` +
+        `start train=${evo.start?.train_score} → final train=${evo.final?.train_score} heldout=${evo.final?.heldout_score}\n` +
+        `final harness: ${evo.final?.harness_id}\n\n` +
+        lines.join("\n") +
+        `\n\n${evo.note || ""}`;
+    }
     $("ask").onclick = async () => {
-      $("nlmeta").textContent = "generating…";
+      $("nlmeta").textContent = "asking MongoDB AI (agent may evolve with Llama if below target)…";
+      $("acctAnswer").textContent = "…";
+      $("evolveOut").textContent = "checking whether to evolve…";
       try {
-        const data = await j("/api/nl-query", { method: "POST", body: JSON.stringify({ query: $("q").value }) });
+        const data = await j("/api/ask", { method: "POST", body: JSON.stringify({ question: $("q").value }) });
+        const bullets = (data.highlights || []).map(h => "• " + h).join("\n");
+        $("acctAnswer").textContent = (data.answer || "") + (bullets ? "\n\n" + bullets : "");
         $("mongosh").textContent = data.mongosh || "";
-        $("nlmeta").textContent = `${data.operation} on ${data.collection} · ${data.result_count} docs · ${data.latency_ms}ms`;
-        $("results").textContent = JSON.stringify(data.results, null, 2);
-      } catch (e) { $("nlmeta").textContent = e.message; }
-    };
-    $("evolve").onclick = async () => {
-      $("evolveOut").textContent = "querying scores via NL→MongoDB, then mutating harness…";
-      try {
-        const data = await j("/api/evolve", { method: "POST", body: JSON.stringify({}) });
-        $("evolveOut").textContent = JSON.stringify(data, null, 2);
+        $("nlmeta").textContent = `${data.provider} · ${data.metric_id} · ${data.row_count} rows · ${data.latency_ms || "?"}ms`;
+        $("results").textContent = JSON.stringify(data.rows || [], null, 2);
+        renderEvolution(data.evolution);
         await lineage();
-      } catch (e) { $("evolveOut").textContent = e.message; }
+      } catch (e) {
+        $("nlmeta").textContent = e.message;
+        $("acctAnswer").textContent = e.message;
+        $("evolveOut").textContent = e.message;
+      }
     };
     $("seed").onclick = async () => {
       const data = await j("/api/seed", { method: "POST" });

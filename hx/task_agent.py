@@ -91,7 +91,10 @@ def run_task(harness_id: str, task: Task, seed: int = 0) -> Trace:
     policies = {c.component_id: c.value for c in comps if c.kind == "policy"}
     max_retries = int(policies.get("policy.max_retries") or 0)
     trunc = int(policies.get("policy.doc_truncate_chars") or 300)
-    model = os.getenv("TASK_MODEL", os.getenv("META_MODEL", "claude-haiku-5-5"))
+    model = os.getenv(
+        "TASK_MODEL",
+        os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
+    )
     allow_sample_tool = bool(policies.get("policy.sample_docs_tool")) and bool(tools)
 
     prompt_tokens = 0

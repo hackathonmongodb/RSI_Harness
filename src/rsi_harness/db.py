@@ -18,7 +18,14 @@ COLLECTIONS = (
 
 @lru_cache(maxsize=1)
 def client() -> MongoClient:
-    return MongoClient(mongodb_uri(), serverSelectionTimeoutMS=8000)
+    kwargs: dict = {"serverSelectionTimeoutMS": 8000}
+    try:
+        import certifi
+
+        kwargs["tlsCAFile"] = certifi.where()
+    except ImportError:
+        pass
+    return MongoClient(mongodb_uri(), **kwargs)
 
 
 def db() -> Database:

@@ -7,9 +7,11 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from rsi_harness.ask import ask as accountant_ask
 from rsi_harness.db import ping
 from rsi_harness.evolve import evolve_once
 from rsi_harness.harness import active, list_versions
+from rsi_harness.mflix_rsi import run_mflix_rsi
 from rsi_harness.nl_query import run as nl_run
 from rsi_harness.seed import seed
 
@@ -20,6 +22,10 @@ app = FastAPI(title="RSI Harness", version="0.1.0")
 
 class NLBody(BaseModel):
     query: str
+
+
+class AskBody(BaseModel):
+    question: str
 
 
 class EvolveBody(BaseModel):
@@ -67,10 +73,39 @@ def api_nl(body: NLBody):
         raise HTTPException(500, str(e)) from e
 
 
+@app.post("/api/ask")
+def api_ask(body: AskBody):
+    """Accountant mode: query Atlas, then explain results in plain English."""
+    if not body.question.strip():
+        raise HTTPException(400, "question required")
+    try:
+        return accountant_ask(body.question.strip())
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:
+        raise HTTPException(500, str(e)) from e
+
+
 @app.post("/api/evolve")
 def api_evolve(body: EvolveBody):
     try:
         return evolve_once(body.focus)
+    except Exception as e:
+        raise HTTPException(500, str(e)) from e
+
+
+class MflixRsiBody(BaseModel):
+    generations: int | None = None
+
+
+@app.post("/api/mflix-rsi")
+def api_mflix_rsi(body: MflixRsiBody):
+    """Internal agent evolve hook (not exposed in UI). Force-run with stop conditions."""
+    gens = body.generations
+    if gens is not None:
+        gens = max(1, min(int(gens), 12))
+    try:
+        return run_mflix_rsi(gens, force=True)
     except Exception as e:
         raise HTTPException(500, str(e)) from e
 

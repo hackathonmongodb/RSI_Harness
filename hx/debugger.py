@@ -117,7 +117,10 @@ def _prompt_messages(trace: Trace, comps: list[Component], question: str) -> lis
 
 
 def _analyze_one(trace: Trace, comps: list[Component], question: str) -> Optional[Report]:
-    model = os.environ.get("TASK_MODEL", "fake-task")
+    model = os.environ.get(
+        "META_MODEL",
+        os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
+    )
     messages = _prompt_messages(trace, comps, question)
     blob = json.dumps(messages)
     if "HELD OUT" in blob or "heldout_outcomes" in blob or "gold" in blob.lower() and "pipeline" in blob.lower():

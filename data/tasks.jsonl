@@ -1,0 +1,5 @@
+{"id": "mflix_count", "prompt": "How many movies are in the sample_mflix.movies collection?", "reference": "A correct answer reports the document count of movies (approx tens of thousands)."}
+{"id": "mflix_genres", "prompt": "Which genre appears most often among movies?", "reference": "Should name the top genre by frequency (often Drama) with optional count."}
+{"id": "mflix_hanks", "prompt": "List a few movies starring Tom Hanks.", "reference": "Should return real Tom Hanks titles from the dataset (e.g. Forrest Gump, Toy Story)."}
+{"id": "mflix_scifi_2010", "prompt": "Find science fiction movies from 2010.", "reference": "Titles should be 2010 films tagged Sci-Fi / science fiction."}
+{"id": "mflix_imdb_1994", "prompt": "What are the highest IMDb-rated movies from 1994?", "reference": "Should prefer 1994 films with high imdb.rating (e.g. Shawshank / Pulp Fiction era)."}
