@@ -27,11 +27,11 @@ def test_h0_and_h_mongodb_prompts_differ():
 
 def test_delete_rule_removes_exact_text_only():
     parent, comps = load_harness("h_mongodb")
-    target = next(c for c in comps if c.component_id == "rule.tip.dates")
+    target = next(c for c in comps if c.component_id == "rule.tip_7")
     policies_before = {c.component_id: c.value for c in comps if c.kind == "policy"}
     child = apply_edits(
         parent.harness_id,
-        [Edit(op="delete", kind="rule", target_component_id="rule.tip.dates")],
+        [Edit(op="delete", kind="rule", target_component_id="rule.tip_7")],
         "prune",
         1,
     )
@@ -42,7 +42,33 @@ def test_delete_rule_removes_exact_text_only():
     policies_after = {c.component_id: c.value for c in after if c.kind == "policy"}
     assert policies_after == policies_before
     ids = {c.component_id for c in after}
-    assert "rule.tip.dates" not in ids
+    assert "rule.tip_7" not in ids
+
+
+def test_h_mongodb_ids_token_cost_and_three_fewshots():
+    _, comps = load_harness("h_mongodb")
+    ids = {c.component_id for c in comps}
+    assert {f"rule.tip_{i}" for i in range(1, 10)} <= ids
+    assert {"rule.fewshot_1", "rule.fewshot_2", "rule.fewshot_3"} <= ids
+    for c in comps:
+        if c.kind == "rule" and c.content:
+            assert c.token_cost == len(c.content) // 4
+            assert len(c.content) <= 400
+
+
+def test_assemble_includes_every_collection_in_ctx():
+    h0, c0 = load_harness("h0")
+    ctx = {
+        "description": "mflix",
+        "collections": {
+            "movies": {"description": "Movie documents.", "names": "title year"},
+            "comments": {"description": "Comment documents.", "names": "text movie_id"},
+        },
+    }
+    _, messages, _ = assemble(h0, c0, TASK, ctx)
+    blob = messages[0]["content"]
+    assert "### Collection `movies`" in blob
+    assert "### Collection `comments`" in blob
 
 
 def test_set_policy_changes_only_that_knob():

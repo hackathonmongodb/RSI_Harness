@@ -14,9 +14,17 @@ from hx.config import get_client  # noqa: E402
 from hx.harness import load_harness, seed_baselines  # noqa: E402
 
 
+def _hx_harness_db():
+    """PROMPTS: seed via admin; SPEC §2 also allows meta readWrite on hx_harness."""
+    try:
+        return get_client("admin")["hx_harness"]
+    except Exception:
+        return get_client("meta")["hx_harness"]
+
+
 def main() -> None:
     seed_baselines()
-    db = get_client("meta")["hx_harness"]
+    db = _hx_harness_db()
     n = 0
     for hid in ("h0", "h_mongodb"):
         h, comps = load_harness(hid)

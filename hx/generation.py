@@ -94,17 +94,17 @@ def _update_harness_doc(harness_id: str, result: GenerationResult) -> None:
 def run_generation(
     harness_id: str,
     dataset: str,
-    seeds: list[int] | None = None,
-    parallel: int | None = None,
+    seeds: list[int] = [0],
+    parallel: int = 8,
     task_ids: list[str] | None = None,
 ) -> GenerationResult:
-    seeds = seeds or [0]
+    seeds = list(seeds) if seeds else [0]
     tasks = _load_tasks(dataset, task_ids)
     key = (harness_id, tuple(seeds), tuple(sorted(t.task_id for t in tasks)))
     if key in _CACHE:
         return _CACHE[key]
 
-    workers = parallel or int(os.getenv("HX_CONCURRENCY", "8"))
+    workers = parallel if parallel else int(os.getenv("HX_CONCURRENCY", "8"))
     traces: list[tuple[Task, Trace]] = []
 
     def _one(pair: tuple[Task, int]) -> tuple[Task, Trace]:

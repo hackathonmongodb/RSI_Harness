@@ -26,3 +26,14 @@ def test_fake_complete_signature_and_tokens(monkeypatch):
 def test_fake_json_is_valid_answer():
     parsed = parse_json_answer(json.dumps(FAKE_JSON))
     validate_pipeline(pipeline_from_parsed(parsed))
+
+
+def test_parse_extended_json_dates():
+    text = (
+        '{"collection":"movies","pipeline":[{"$match":{"released":'
+        '{"$date":"2010-01-01T00:00:00Z"}}}]}'
+    )
+    parsed = parse_json_answer(text)
+    pipe = pipeline_from_parsed(parsed)
+    validate_pipeline(pipe)
+    assert parsed["collection"] == "movies"

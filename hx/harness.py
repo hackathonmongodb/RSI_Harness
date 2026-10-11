@@ -13,6 +13,10 @@ _COMPONENTS: dict[tuple[str, int], Component] = {}
 _HARNESSES: dict[str, Harness] = {}
 _LATEST: dict[str, int] = {}
 
+def _token_cost(text: str | None) -> int:
+    return len(text or "") // 4
+
+
 RULE_BASE = (
     "You generate MongoDB aggregation pipelines from natural language. "
     "Return ONLY JSON: {\"collection\": \"<name>\", \"pipeline\": [ ... ]} "
@@ -20,25 +24,39 @@ RULE_BASE = (
     "$accumulator, or $where. Max 12 stages."
 )
 
+# PROMPTS B: rule.tip_1..9 = MongoDB's nine general tips (AGENTS.md).
 TIPS = [
-    ("rule.tip.operators", "Use proper MongoDB operators ($eq, $gt, $lt) and types (ObjectId, ISODate)."),
-    ("rule.tip.aggregate", "For complex queries use $match, $group, $lookup with $match first."),
-    ("rule.tip.indexes", "Prefer indexed fields in $match/$sort; avoid $where and full scans."),
-    ("rule.tip.limit", "Include $sort and $limit when the question asks for top-N or ordering."),
-    ("rule.tip.nulls", "Handle missing fields with $exists/$type; do not emit _id: null in $group."),
-    ("rule.tip.dates", "Never use empty new Date(); always an explicit ISO date string."),
-    ("rule.tip.decimal", "For Decimal128 prefer range queries over exact equality."),
-    ("rule.tip.arrays", "Use $elemMatch, $all, or $size for array fields."),
-    ("rule.tip.project", "Project only requested fields; put $project last."),
+    ("rule.tip_1", "Use proper operators and types (ObjectId, ISODate); never loose JS types."),
+    ("rule.tip_2", "Use an aggregation pipeline for complex queries ($match, $group, $lookup)."),
+    ("rule.tip_3", "Prefer indexed fields; avoid $where and collection scans."),
+    ("rule.tip_4", "Add $sort and $limit when the question asks for order or top-N."),
+    ("rule.tip_5", "Handle null / missing / empty arrays with $exists and $type."),
+    ("rule.tip_6", "Never emit _id: null in result objects or $group identities."),
+    ("rule.tip_7", "Never use new Date() with no argument; always give an explicit date."),
+    ("rule.tip_8", "For Decimal128, prefer range queries over exact equality."),
+    ("rule.tip_9", "Use $elemMatch, $all, $size for array matching."),
 ]
 
+# Train-style mflix questions only (not the held-out fallback tasks).
 FEWSHOTS = [
     (
-        "rule.fewshot.2015_comments",
-        'Q: genres and runtime of 10 movies from 2015 with the most comments. '
+        "rule.fewshot_1",
+        'Q: genres and runtime of 10 movies from 2015 with the most comments. Return genres, runtime. '
         'A: {"collection":"movies","pipeline":[{"$match":{"year":2015}},'
         '{"$sort":{"num_mflix_comments":-1}},{"$limit":10},'
         '{"$project":{"_id":0,"genres":1,"runtime":1}}]}',
+    ),
+    (
+        "rule.fewshot_2",
+        'Q: List title and year of 5 sci-fi movies from 2010. Return title, year. '
+        'A: {"collection":"movies","pipeline":[{"$match":{"year":2010,"genres":"Sci-Fi"}},'
+        '{"$limit":5},{"$project":{"_id":0,"title":1,"year":1}}]}',
+    ),
+    (
+        "rule.fewshot_3",
+        'Q: Movies released between 1990 and 2000, newest first, limit 10. Return title, year. '
+        'A: {"collection":"movies","pipeline":[{"$match":{"year":{"$gte":1990,"$lte":2000}}},'
+        '{"$sort":{"year":-1}},{"$limit":10},{"$project":{"_id":0,"title":1,"year":1}}]}',
     ),
 ]
 
@@ -104,6 +122,7 @@ def seed_baselines(dataset: str = "sample_mflix") -> None:
         name="base",
         content=RULE_BASE,
         pinned=True,
+        token_cost=_token_cost(RULE_BASE),
     )
     h0_comps = [base, *_default_policies(cot=False, n_sample=0, schema_style="names", indexes=False, retries=0)]
     for c in h0_comps:
@@ -121,14 +140,23 @@ def seed_baselines(dataset: str = "sample_mflix") -> None:
 
     mongo_comps = [base]
     for cid, text in TIPS + FEWSHOTS:
-        mongo_comps.append(Component(component_id=cid, version=1, kind="rule", name=cid, content=text))
+        mongo_comps.append(
+            Component(
+                component_id=cid,
+                version=1,
+                kind="rule",
+                name=cid,
+                content=text,
+                token_cost=_token_cost(text),
+            )
+        )
     mongo_comps.extend(
         _default_policies(
             cot=True,
             n_sample=3,
             schema_style="ts_annotated",
             indexes=True,
-            retries=1,
+            retries=0,
             version=2,
         )
     )
@@ -214,25 +242,31 @@ def assemble(
         f"Database: {db_name}",
         f"Description: {desc}",
     ]
-    collections = ctx.get("collections") or {}
-    col = collections.get(task.collection) or {}
-    user_parts.append(f"### Collection `{task.collection}`")
-    if col.get("description"):
-        user_parts.append(col["description"])
-    if style == "ts_annotated" and col.get("ts_schema"):
-        user_parts.append("Schema:\n" + str(col["ts_schema"]))
-    elif col.get("ts_schema") or col.get("names"):
-        user_parts.append("Schema (field names):\n" + str(col.get("names") or col.get("ts_schema")))
-    if n_sample:
-        docs = list(col.get("sample_docs") or [])[:n_sample]
-        clipped = []
-        for d in docs:
-            s = d if isinstance(d, str) else str(d)
-            clipped.append(s[:trunc])
-        if clipped:
-            user_parts.append("Example documents:\n" + "\n".join(clipped))
-    if want_idx and col.get("indexes"):
-        user_parts.append("Indexes:\n" + str(col["indexes"]))
+    collections = dict(ctx.get("collections") or {})
+    if task.collection and task.collection not in collections:
+        collections[task.collection] = {}
+    names = list(collections)
+    if task.collection in names:
+        names = [task.collection] + [n for n in names if n != task.collection]
+    for cname in names:
+        col = collections.get(cname) or {}
+        user_parts.append(f"### Collection `{cname}`")
+        if col.get("description"):
+            user_parts.append(col["description"])
+        if style == "ts_annotated" and col.get("ts_schema"):
+            user_parts.append("Schema:\n" + str(col["ts_schema"]))
+        elif col.get("ts_schema") or col.get("names"):
+            user_parts.append("Schema (field names):\n" + str(col.get("names") or col.get("ts_schema")))
+        if n_sample:
+            docs = list(col.get("sample_docs") or [])[:n_sample]
+            clipped = []
+            for d in docs:
+                s = d if isinstance(d, str) else str(d)
+                clipped.append(s[:trunc])
+            if clipped:
+                user_parts.append("Example documents:\n" + "\n".join(clipped))
+        if want_idx and col.get("indexes"):
+            user_parts.append("Indexes:\n" + str(col["indexes"]))
     user_parts.append("Natural language query:\n" + task.question)
     user_parts.append("Respond with JSON only: {\"collection\": \"...\", \"pipeline\": [...]} ")
     user = "\n\n".join(user_parts)
@@ -308,7 +342,30 @@ def apply_edits(parent_id: str, edits: list[Edit], phase: Phase, generation: int
         components=_refs(list(by_id.values())),
         status="candidate",
     )
-    return _put_harness(child)
+    child = _put_harness(child)
+    _persist_apply(child, list(by_id.values()))
+    return child
+
+
+def _persist_apply(child: Harness, comps: list[Component]) -> None:
+    """Write new component versions + child harness. Meta can write hx_harness (SPEC §2)."""
+    try:
+        from hx.config import get_client
+
+        db = get_client("meta")["hx_harness"]
+        for c in comps:
+            db.components.update_one(
+                {"component_id": c.component_id, "version": c.version},
+                {"$set": c.model_dump()},
+                upsert=True,
+            )
+        db.harnesses.update_one(
+            {"harness_id": child.harness_id},
+            {"$set": child.model_dump()},
+            upsert=True,
+        )
+    except Exception:
+        return
 
 
 STUB_CTX = {
