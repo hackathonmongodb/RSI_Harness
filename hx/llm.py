@@ -1,221 +1,273 @@
-"""Part B LLM adapter. SPEC §7 signature — do not fork this in C.
+"""OpenAI-compatible chat client (Groq by default) with tool calling and rate-limit waits.
 
-Live backend: Groq OpenAI-compatible API (Llama models).
+Everything that talks to a model goes through `LLM`. Tests pass a scripted fake with the
+same two methods (`chat`, `json`).
 """
-
 from __future__ import annotations
 
 import json
-import logging
-import os
+import re
 import time
-from pathlib import Path
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Callable, Optional
 
-from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from hx.config import Settings
 
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
-load_dotenv()
-
-log = logging.getLogger("hx.llm")
-
-GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-DEFAULT_MODEL = "qwen/qwen3.8-27b"
+WaitHook = Callable[[float, str], None]
 
 
-class LLMResult(BaseModel):
-    text: str
+@dataclass
+class ToolCall:
+    id: str
+    name: str
+    arguments: dict[str, Any]
+    raw_arguments: str = ""
+
+
+@dataclass
+class Reply:
+    content: str = ""
+    tool_calls: list[ToolCall] = field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
-    tool_calls: list[dict] = Field(default_factory=list)
     model: str = ""
-    fake: bool = False
-    retries: int = 0
+    finish_reason: str = ""
+    error: str = ""          # set when the provider rejected a malformed tool call
 
 
-FAKE_JSON = {
-    "collection": "movies",
-    "pipeline": [
-        {"$match": {"year": 2015}},
-        {"$sort": {"num_mflix_comments": -1}},
-        {"$limit": 10},
-        {"$project": {"_id": 0, "genres": 1, "runtime": 1}},
-    ],
-}
+class LLMError(RuntimeError):
+    pass
 
 
-def fake_enabled() -> bool:
-    return os.getenv("LLM_FAKE", "0").strip() in {"1", "true", "True"}
+_RETRY_IN = re.compile(r"try again in ((?:\d+h)?(?:\d+m(?!s))?(?:[\d.]+(?:ms|s))?)", re.I)
 
 
-def groq_api_key() -> str:
-    return os.getenv("GROQ_API_KEY", "").strip()
+def _parse_duration(text: str) -> Optional[float]:
+    """'1m2.5s' / '590ms' / '7.2s' -> seconds."""
+    m = _RETRY_IN.search(text or "")
+    if not m or not m.group(1):
+        return None
+    total = 0.0
+    for num, unit in re.findall(r"([\d.]+)(h|ms|m|s)", m.group(1)):
+        v = float(num)
+        total += {"h": 3600, "m": 60, "s": 1, "ms": 0.001}[unit] * v
+    return total or None
 
 
-def default_model() -> str:
-    return (
-        os.getenv("GROQ_MODEL", "").strip()
-        or os.getenv("TASK_MODEL", "").strip()
-        or DEFAULT_MODEL
-    )
+def retry_after_seconds(err: BaseException) -> Optional[float]:
+    resp = getattr(err, "response", None)
+    if resp is not None:
+        ra = resp.headers.get("retry-after")
+        if ra:
+            try:
+                return float(ra)
+            except ValueError:
+                pass
+    return _parse_duration(str(err))
 
 
-# Back-compat alias for earlier Llama wiring
-def llama_api_key() -> str:
-    return groq_api_key()
+def _status(err: BaseException) -> Optional[int]:
+    return getattr(err, "status_code", None) or getattr(getattr(err, "response", None), "status_code", None)
 
 
-def _estimate_tokens(text: str) -> int:
-    return max(1, len(text) // 4) if text else 0
+def _is_malformed_generation(msg: str) -> bool:
+    # Groq: tool_use_failed (bad tool-call JSON), output_parse_failed (gpt-oss harmony output unparsable)
+    return "tool_use_failed" in msg or "output_parse_failed" in msg or "failed_generation" in msg
 
 
-def _is_rate_limit(err: BaseException) -> bool:
-    msg = str(err).lower()
-    status = getattr(err, "status_code", None) or getattr(err, "status", None)
-    return status == 429 or "rate_limit" in msg or "too many requests" in msg or "429" in msg
+def _failed_generation(err: BaseException) -> str:
+    body = getattr(err, "body", None)
+    if isinstance(body, dict):
+        fg = body.get("failed_generation") or (body.get("error") or {}).get("failed_generation")
+        if isinstance(fg, str):
+            return fg
+    return ""
 
 
-def _is_retryable(err: BaseException) -> bool:
-    status = getattr(err, "status_code", None) or getattr(err, "status", None)
-    if status in {429, 500, 502, 503, 504}:
-        return True
-    return _is_rate_limit(err) or "server" in str(err).lower()
-
-
-def complete(
-    model: str,
-    system: str,
-    messages: list[dict],
-    tools: list[dict] | None = None,
-    temperature: float = 0.0,
-    max_tokens: int = 2048,
-) -> LLMResult:
-    tools = tools or []
-    if fake_enabled():
-        text = json.dumps(FAKE_JSON)
-        prompt = system + json.dumps(messages)
-        return LLMResult(
-            text=text,
-            prompt_tokens=_estimate_tokens(prompt),
-            completion_tokens=_estimate_tokens(text),
-            model="fake",
-            fake=True,
-        )
-    return _live_complete(model, system, messages, tools, temperature, max_tokens)
-
-
-def _live_complete(
-    model: str,
-    system: str,
-    messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]],
-    temperature: float,
-    max_tokens: int,
-) -> LLMResult:
-    key = groq_api_key()
-    if not key:
-        raise RuntimeError("LLM_FAKE=0 but GROQ_API_KEY is empty — set it in .env")
-
-    use_model = (model or "").strip() or default_model()
-    if use_model.startswith("claude") or use_model.startswith("fake") or use_model.startswith("Llama-4"):
-        use_model = default_model()
-
-    from openai import OpenAI
-
-    client = OpenAI(api_key=key, base_url=GROQ_BASE_URL)
-    oai_messages = _to_openai_messages(system, messages)
-    kwargs: dict[str, Any] = {
-        "model": use_model,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "messages": oai_messages or [{"role": "user", "content": "Hello"}],
-    }
-    oai_tools = [_to_openai_tool(t) for t in tools]
-    if oai_tools:
-        kwargs["tools"] = oai_tools
-
-    last_err: BaseException | None = None
-    retries = 0
-    t0 = time.perf_counter()
-    for attempt in range(6):
+def salvage_tool_calls(failed_generation: str) -> list[ToolCall]:
+    """Groq rejects tool calls whose arguments are not strict JSON (gpt-oss often puts raw newlines or
+    control characters inside long string arguments). Its `failed_generation` usually still holds a
+    usable {"name", "arguments"} object; parse it leniently instead of spending a resample."""
+    text = (failed_generation or "").strip()
+    if not text:
+        return []
+    data: Any = None
+    for candidate in (text, text[text.find("{"): text.rfind("}") + 1] if "{" in text else ""):
+        if not candidate:
+            continue
         try:
-            resp = client.chat.completions.create(**kwargs)
-            message = resp.choices[0].message
-            text = (message.content or "").strip()
-            tool_calls: list[dict] = []
-            for tc in message.tool_calls or []:
-                fn = tc.function
-                args_raw = fn.arguments or "{}"
-                try:
-                    args = json.loads(args_raw) if isinstance(args_raw, str) else dict(args_raw)
-                except json.JSONDecodeError:
-                    args = {"raw": args_raw}
-                tool_calls.append({"id": tc.id or "", "name": fn.name or "", "args": args})
-            usage = resp.usage
-            prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
-            completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
-            latency_ms = int((time.perf_counter() - t0) * 1000)
-            log.info(
-                "groq model=%s prompt_tokens=%s completion_tokens=%s latency_ms=%s",
-                use_model,
-                prompt_tokens,
-                completion_tokens,
-                latency_ms,
-            )
-            return LLMResult(
-                text=text,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                tool_calls=tool_calls,
-                model=use_model,
-                retries=retries,
-            )
-        except Exception as err:  # noqa: BLE001
-            last_err = err
-            if not _is_retryable(err) or attempt == 5:
-                raise
-            retries += 1
-            time.sleep(min(2**attempt, 16))
-    raise RuntimeError(f"complete failed after retries: {last_err}")
-
-
-def _to_openai_tool(tool: dict[str, Any]) -> dict[str, Any]:
-    if tool.get("type") == "function":
-        return tool
-    return {
-        "type": "function",
-        "function": {
-            "name": tool["name"],
-            "description": tool.get("description", ""),
-            "parameters": tool.get("input_schema")
-            or tool.get("parameters")
-            or {"type": "object", "properties": {}},
-        },
-    }
-
-
-def _to_openai_messages(system: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    if system:
-        out.append({"role": "system", "content": system})
-    for m in messages:
-        role = m.get("role") or "user"
-        if role == "system":
-            content = m.get("content", "")
-            if content:
-                out.append(
-                    {
-                        "role": "system",
-                        "content": content if isinstance(content, str) else json.dumps(content),
-                    }
-                )
+            data = json.loads(candidate, strict=False)
+            break
+        except json.JSONDecodeError:
             continue
-        if role == "tool":
-            out.append({"role": "user", "content": f"Tool result: {m.get('content', '')}"})
+    items = data if isinstance(data, list) else [data]
+    calls: list[ToolCall] = []
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
             continue
-        content = m.get("content", "")
-        if not isinstance(content, str):
-            content = json.dumps(content)
-        out.append({"role": "user" if role == "user" else "assistant", "content": content})
-    return out
+        fn = item.get("function") if isinstance(item.get("function"), dict) else item
+        if "arguments" not in fn and "parameters" not in fn:
+            continue
+        name = fn.get("name")
+        args = fn.get("arguments", fn.get("parameters"))
+        if isinstance(args, str):
+            try:
+                args = json.loads(args, strict=False)
+            except json.JSONDecodeError:
+                continue
+        if isinstance(name, str) and name and isinstance(args, dict):
+            calls.append(ToolCall(id=f"salvaged_{int(time.time() * 1000)}_{i}", name=name,
+                                  arguments=args, raw_arguments=json.dumps(args)))
+    return calls
+
+
+def parse_json_object(text: str) -> dict[str, Any]:
+    """Tolerant JSON-object extraction (code fences, leading prose)."""
+    blob = (text or "").strip()
+    if blob.startswith("```"):
+        blob = re.sub(r"^```(?:json)?\s*", "", blob)
+        blob = re.sub(r"\s*```$", "", blob)
+    try:
+        val = json.loads(blob)
+    except json.JSONDecodeError:
+        start, end = blob.find("{"), blob.rfind("}")
+        if start < 0 or end <= start:
+            raise
+        val = json.loads(blob[start : end + 1])
+    if not isinstance(val, dict):
+        raise ValueError("expected a JSON object")
+    return val
+
+
+class LLM:
+    def __init__(self, settings: Settings, on_wait: Optional[WaitHook] = None):
+        if not settings.api_key:
+            raise LLMError("No API key. Set GROQ_API_KEY (or HX_API_KEY) in .env")
+        from openai import OpenAI
+
+        self.s = settings
+        self.on_wait = on_wait
+        self._client = OpenAI(api_key=settings.api_key, base_url=settings.base_url, max_retries=0, timeout=180)
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+
+    # ------------------------------------------------------------------ core
+    def _create(self, *, salvage: bool = False, **kwargs):
+        """Call the API with waits/retries. With salvage=True a rejected-but-recoverable tool call
+        comes back as a list[ToolCall] instead of a response."""
+        last: BaseException | None = None
+        temperature = kwargs.get("temperature", 0.0)
+        malformed = 0
+        for attempt in range(10):
+            try:
+                return self._client.chat.completions.create(**kwargs)
+            except Exception as err:  # noqa: BLE001
+                last = err
+                status = _status(err)
+                msg = str(err)
+                if status == 429 or "rate_limit" in msg:
+                    wait = min((retry_after_seconds(err) or 5.0) + 0.5, 120.0)
+                    if self.on_wait:
+                        self.on_wait(wait, "rate limit")
+                    time.sleep(wait)
+                    continue
+                if status == 400 and _is_malformed_generation(msg):
+                    if salvage:
+                        calls = salvage_tool_calls(_failed_generation(err))
+                        if calls:
+                            return calls
+                    if malformed < 2:
+                        # Model emitted unparsable output / tool call: resample a little warmer.
+                        malformed += 1
+                        temperature = min(1.0, temperature + 0.3)
+                        kwargs["temperature"] = temperature
+                        continue
+                    raise LLMError("malformed_generation: " + msg[:500]) from err
+                if status in (500, 502, 503, 504) or "timed out" in msg.lower() or "connection" in msg.lower():
+                    wait = min(2 ** attempt, 30)
+                    if self.on_wait:
+                        self.on_wait(wait, f"provider error {status or ''}".strip())
+                    time.sleep(wait)
+                    continue
+                raise LLMError(msg[:800]) from err
+        raise LLMError(f"gave up after retries: {last}")
+
+    def _extra(self, model: str) -> dict[str, Any]:
+        if self.s.reasoning_effort and "gpt-oss" in model:
+            return {"reasoning_effort": self.s.reasoning_effort}
+        return {}
+
+    def chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: Optional[list[dict[str, Any]]] = None,
+        *,
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        temperature: float = 0.0,
+    ) -> Reply:
+        use = model or self.s.model
+        kwargs: dict[str, Any] = {
+            "model": use,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens or self.s.max_tokens,
+        }
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+        extra = self._extra(use)
+        if extra:
+            kwargs["extra_body"] = extra
+        try:
+            resp = self._create(salvage=bool(tools), **kwargs)
+        except LLMError as err:
+            if str(err).startswith("malformed_generation"):
+                return Reply(model=use, error=str(err))
+            raise
+        if isinstance(resp, list):   # tool call recovered from the provider's failed_generation
+            return Reply(tool_calls=resp, model=use, finish_reason="salvaged")
+        choice = resp.choices[0]
+        msg = choice.message
+        calls: list[ToolCall] = []
+        for tc in msg.tool_calls or []:
+            raw = tc.function.arguments or "{}"
+            try:
+                args = json.loads(raw) if isinstance(raw, str) else dict(raw)
+                if not isinstance(args, dict):
+                    args = {"_value": args}
+            except json.JSONDecodeError:
+                args = {"_unparsed": raw}
+            calls.append(ToolCall(id=tc.id or f"call_{len(calls)}", name=tc.function.name or "", arguments=args, raw_arguments=raw))
+        usage = resp.usage
+        pt = int(getattr(usage, "prompt_tokens", 0) or 0)
+        ct = int(getattr(usage, "completion_tokens", 0) or 0)
+        self.total_prompt_tokens += pt
+        self.total_completion_tokens += ct
+        return Reply(
+            content=(msg.content or "").strip(),
+            tool_calls=calls,
+            prompt_tokens=pt,
+            completion_tokens=ct,
+            model=use,
+            finish_reason=choice.finish_reason or "",
+        )
+
+    def json(self, system: str, user: str, *, model: Optional[str] = None, max_tokens: int = 1500) -> dict[str, Any]:
+        """Side-call that must return one JSON object (recall, reflection)."""
+        use = model or self.s.model
+        kwargs: dict[str, Any] = {
+            "model": use,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "temperature": 0.0,
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
+        }
+        extra = self._extra(use)
+        if extra:
+            kwargs["extra_body"] = extra
+        resp = self._create(**kwargs)
+        usage = resp.usage
+        self.total_prompt_tokens += int(getattr(usage, "prompt_tokens", 0) or 0)
+        self.total_completion_tokens += int(getattr(usage, "completion_tokens", 0) or 0)
+        return parse_json_object(resp.choices[0].message.content or "")

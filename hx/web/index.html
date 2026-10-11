@@ -1,0 +1,761 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hx · agent console</title>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<style>
+:root {
+  --bg: #0d1016; --panel: #131821; --panel-2: #181f2b; --line: #243042; --line-2: #2e3d54;
+  --text: #dbe3ee; --dim: #8593a8; --faint: #5b687c;
+  --accent: #5ab0ff; --accent-2: #7c8cff; --ok: #3fcf8e; --warn: #f2b84b; --bad: #ff6b6b; --mem: #c38bff;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, "PingFang SC", "Noto Sans SC", sans-serif;
+  --r: 10px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13.5px/1.5 var(--sans); }
+button { font: inherit; color: inherit; cursor: pointer; }
+pre, code { font-family: var(--mono); }
+a { color: var(--accent); }
+
+/* ---------- header */
+header { height: 52px; display: flex; align-items: center; gap: 14px; padding: 0 16px; border-bottom: 1px solid var(--line); background: #0f141c; }
+.brand { font-weight: 700; letter-spacing: .3px; display: flex; align-items: center; gap: 8px; }
+.brand .logo { width: 22px; height: 22px; border-radius: 6px; background: conic-gradient(from 200deg, var(--accent), var(--mem), var(--ok), var(--accent)); }
+.meta { display: flex; gap: 8px; flex-wrap: nowrap; overflow: hidden; color: var(--dim); font-size: 12px; min-width: 0; }
+.chip { border: 1px solid var(--line-2); border-radius: 999px; padding: 2px 9px; white-space: nowrap; font-size: 12px; color: var(--dim); }
+.chip b { color: var(--text); font-weight: 600; }
+.chip.atlas b { color: var(--ok); }
+.spacer { flex: 1; }
+.status { display: flex; align-items: center; gap: 8px; padding: 4px 12px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line-2); font-weight: 600; font-size: 12.5px; white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.status.busy .dot { background: var(--accent); box-shadow: 0 0 0 0 var(--accent); animation: ping 1.4s infinite; }
+.status.wait .dot { background: var(--warn); }
+.status.review .dot { background: var(--mem); animation: ping 1.4s infinite; }
+@keyframes ping { 0% { box-shadow: 0 0 0 0 rgba(90,176,255,.6);} 100% { box-shadow: 0 0 0 9px rgba(90,176,255,0);} }
+.toggle { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); white-space: nowrap; }
+.switch { width: 32px; height: 18px; border-radius: 999px; background: var(--line-2); position: relative; border: 0; padding: 0; }
+.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform .15s; }
+.switch.on { background: var(--accent); }
+.switch.on::after { transform: translateX(14px); }
+
+/* ---------- layout */
+main { height: calc(100% - 52px); display: grid; grid-template-columns: minmax(300px, 1fr) minmax(420px, 1.45fr) minmax(330px, 1.05fr); }
+section.pane { min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
+section.pane:last-child { border-right: 0; }
+.pane-h { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line); font-weight: 650; font-size: 12px; text-transform: uppercase; letter-spacing: .8px; color: var(--dim); }
+.pane-h .sub { text-transform: none; letter-spacing: 0; font-weight: 500; color: var(--faint); margin-left: auto; font-size: 12px; }
+.scroll { overflow: auto; min-height: 0; flex: 1; }
+
+/* ---------- chat */
+#chat { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.msg { border-radius: var(--r); padding: 9px 12px; max-width: 100%; overflow-wrap: anywhere; }
+.msg.user { align-self: flex-end; background: #1c3350; border: 1px solid #27486f; max-width: 88%; white-space: pre-wrap; }
+.msg.user .tag { font-size: 11px; color: var(--dim); display: block; margin-bottom: 2px; }
+.msg.assistant { background: var(--panel-2); border: 1px solid var(--line); }
+.msg.thought { color: var(--dim); font-style: italic; padding: 2px 4px; }
+.msg.notice { color: var(--warn); font-size: 12.5px; padding: 2px 4px; }
+.msg.error { color: var(--bad); font-size: 12.5px; padding: 6px 10px; border: 1px solid #5a2a2a; background: #2a1616; }
+.msg.memory { background: linear-gradient(180deg, #221a33, #1b1628); border: 1px solid #45306b; }
+.msg.memory .t { color: var(--mem); font-weight: 650; font-size: 12px; margin-bottom: 4px; }
+.msg.memory .a { font-family: var(--mono); font-size: 12px; color: #e3cdff; }
+.toolchip { display: flex; gap: 8px; align-items: baseline; font-family: var(--mono); font-size: 12px; color: var(--dim); padding: 1px 4px; }
+.toolchip .n { color: var(--text); font-weight: 600; }
+.toolchip.bad .n, .toolchip.bad .s { color: var(--bad); }
+.toolchip.benign .s { color: var(--warn); }
+.toolchip .s { margin-left: auto; white-space: nowrap; }
+.toolchip .x { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+.confirm { border: 1px solid #6b5420; background: #2a2210; border-radius: var(--r); padding: 10px 12px; }
+.confirm code { display: block; margin: 6px 0 8px; padding: 6px 8px; background: #17130a; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.confirm .row { display: flex; gap: 6px; }
+.btn { background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 8px; padding: 5px 11px; font-size: 12.5px; }
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #06121f; font-weight: 650; }
+.btn.danger { border-color: #6a2b2b; color: #ffb1b1; }
+.btn.mem { border-color: #4d3675; color: #e0c8ff; }
+.btn:disabled { opacity: .45; cursor: default; }
+.md :first-child { margin-top: 0; } .md :last-child { margin-bottom: 0; }
+.md pre { background: #0b0f15; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; overflow: auto; font-size: 12px; }
+.md code { background: #0b0f15; padding: 1px 4px; border-radius: 4px; font-size: 12px; }
+.md pre code { background: none; padding: 0; }
+.md h1, .md h2, .md h3 { font-size: 14px; margin: 10px 0 6px; }
+.md ul { padding-left: 18px; margin: 6px 0; }
+
+.composer { border-top: 1px solid var(--line); padding: 10px; display: flex; flex-direction: column; gap: 8px; background: #10151d; }
+.composer textarea { width: 100%; resize: none; min-height: 64px; max-height: 200px; background: var(--panel-2); color: var(--text); border: 1px solid var(--line-2); border-radius: var(--r); padding: 9px 11px; font: inherit; outline: none; }
+.composer textarea:focus { border-color: var(--accent); }
+.composer .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.composer .hint { color: var(--faint); font-size: 11.5px; margin-left: auto; }
+#failbox { display: none; gap: 6px; }
+#failbox.show { display: flex; }
+#failbox input { flex: 1; background: var(--panel-2); border: 1px solid #6a2b2b; color: var(--text); border-radius: 8px; padding: 5px 9px; font: inherit; }
+
+/* ---------- loop */
+.graph-wrap { padding: 8px 10px 0; border-bottom: 1px solid var(--line); background: radial-gradient(ellipse at 50% 0%, #152238 0%, transparent 70%); }
+svg#graph { width: 100%; height: auto; display: block; }
+.node rect { fill: #151c27; stroke: var(--line-2); stroke-width: 1.2; rx: 10; transition: all .2s; }
+.node .title { fill: var(--text); font: 650 12.5px var(--sans); }
+.node .sub { fill: var(--faint); font: 10.5px var(--mono); }
+.node.done rect { stroke: #3d6a9c; fill: #16212f; }
+.node.done .sub { fill: var(--dim); }
+.node.active rect { stroke: var(--accent); fill: #172a42; filter: url(#glow); }
+.node.active .sub { fill: #bfe0ff; }
+.node.fail rect { stroke: var(--bad); }
+.node.skip rect { stroke-dasharray: 4 3; opacity: .55; }
+.node.skip .title { fill: var(--faint); }
+.node.memact rect { stroke: var(--mem); fill: #24193a; filter: url(#glowm); }
+.node.memdone rect { stroke: #7e5bb5; fill: #1d1630; }
+.edge { fill: none; stroke: var(--line-2); stroke-width: 1.4; marker-end: url(#arrow); }
+.edge.flow { stroke: var(--accent); stroke-dasharray: 6 5; animation: dash .7s linear infinite; marker-end: url(#arrowa); }
+.edge.memflow { stroke: var(--mem); stroke-dasharray: 6 5; animation: dash .7s linear infinite; }
+.edge.next { stroke-dasharray: 3 4; stroke: #4b3a6b; }
+.elabel { fill: var(--faint); font: 10px var(--mono); }
+@keyframes dash { to { stroke-dashoffset: -22; } }
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; padding: 8px 12px 10px; }
+.stat { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; min-width: 0; }
+.stat .k { color: var(--faint); font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; }
+.stat .v { font: 600 14px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar { height: 4px; background: var(--line); border-radius: 4px; margin-top: 4px; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+.bar.hot > i { background: var(--warn); }
+
+#timeline { padding: 8px 10px 30px; font-size: 12.5px; }
+.turnhdr { margin: 14px 2px 6px; display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 11.5px; text-transform: uppercase; letter-spacing: .7px; }
+.turnhdr::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.ev { border: 1px solid transparent; border-radius: 8px; margin: 2px 0; }
+.ev > .head { display: grid; grid-template-columns: 54px 22px 1fr auto; gap: 6px; align-items: baseline; padding: 4px 6px; border-radius: 8px; cursor: default; }
+.ev.has-body > .head { cursor: pointer; }
+.ev.has-body > .head:hover { background: #161d28; }
+.ev .ts { color: var(--faint); font: 10.5px var(--mono); }
+.ev .ic { text-align: center; }
+.ev .ti { min-width: 0; }
+.ev .ti b { font-weight: 650; }
+.ev .ti .d { color: var(--dim); font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; }
+.ev .rt { color: var(--faint); font: 10.5px var(--mono); white-space: nowrap; }
+.ev .caret { color: var(--faint); font-size: 10px; margin-left: 4px; }
+.ev.open { border-color: var(--line); background: #10161f; }
+.ev .body { display: none; padding: 4px 8px 10px 88px; }
+.ev.open .body { display: block; }
+.ev.fail .ti b { color: var(--bad); }
+.ev.warn .ti b { color: var(--warn); }
+.ev.ok .ti b { color: var(--ok); }
+.ev.mem .ti b { color: var(--mem); }
+.ev.pending .ic { animation: blink 1s infinite; }
+@keyframes blink { 50% { opacity: .3; } }
+.kv { color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: .6px; margin: 8px 0 3px; }
+pre.blk { margin: 0; background: #0b0f15; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; max-height: 340px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11.5px; color: #c9d4e3; }
+.pill { display: inline-block; border-radius: 999px; padding: 0 7px; font: 600 10.5px var(--mono); border: 1px solid var(--line-2); color: var(--dim); margin-right: 4px; }
+.pill.trial { color: var(--warn); border-color: #6b5420; }
+.pill.active { color: var(--ok); border-color: #1f5a40; }
+.pill.retired { color: var(--faint); }
+.pill.mem { color: var(--mem); border-color: #4d3675; }
+
+/* ---------- memory */
+.tabs { display: flex; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--line); }
+.tab { border: 0; background: none; padding: 7px 10px; color: var(--dim); border-bottom: 2px solid transparent; font-size: 12.5px; font-weight: 600; }
+.tab.on { color: var(--text); border-color: var(--mem); }
+.tab .n { color: var(--faint); font-weight: 500; margin-left: 3px; }
+#mem { padding: 12px; }
+.file { border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); margin-bottom: 12px; overflow: hidden; transition: box-shadow .4s, border-color .4s; }
+.file .fh { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: #0f141c; border-bottom: 1px solid var(--line); font: 12px var(--mono); color: var(--dim); }
+.file .fh .fn { color: var(--text); }
+.file .fh .sp { flex: 1; }
+.file .fb { padding: 10px 12px; }
+.file.flash { border-color: var(--mem); box-shadow: 0 0 0 3px rgba(195,139,255,.25); }
+.seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; background: none; padding: 1px 8px; font-size: 11px; color: var(--dim); }
+.seg button.on { background: var(--line-2); color: var(--text); }
+.case-row { border: 1px solid var(--line); border-radius: var(--r); padding: 8px 10px; margin-bottom: 8px; background: var(--panel); cursor: pointer; transition: border-color .3s, box-shadow .4s; }
+.case-row:hover { border-color: var(--line-2); }
+.case-row .id { font: 600 12.5px var(--mono); color: var(--mem); }
+.case-row .ds { color: var(--dim); font-size: 12.5px; margin: 2px 0 4px; }
+.case-row.retired { opacity: .5; }
+.case-row.flash { border-color: var(--mem); box-shadow: 0 0 0 3px rgba(195,139,255,.25); }
+.hist { position: relative; padding-left: 18px; }
+.hist::before { content: ""; position: absolute; left: 6px; top: 6px; bottom: 6px; width: 2px; background: var(--line-2); }
+.hv { position: relative; margin-bottom: 10px; }
+.hv::before { content: ""; position: absolute; left: -16px; top: 5px; width: 10px; height: 10px; border-radius: 50%; background: var(--panel); border: 2px solid var(--accent-2); }
+.hv .v { font: 600 12.5px var(--mono); }
+.hv .c { color: var(--dim); font-size: 12.5px; }
+.hv .r { color: var(--faint); font-size: 11.5px; }
+.tr { border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; margin-bottom: 7px; background: var(--panel); cursor: pointer; }
+.tr .top { display: flex; gap: 8px; align-items: baseline; font-size: 12px; }
+.tr .task { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.tr .o { font: 600 11px var(--mono); }
+.o.ok { color: var(--ok); } .o.recovered { color: var(--warn); } .o.failed, .o.aborted { color: var(--bad); }
+.tr .m { color: var(--faint); font: 11px var(--mono); margin-top: 2px; }
+.empty { color: var(--faint); text-align: center; padding: 30px 10px; font-size: 12.5px; }
+
+/* ---------- modal */
+#modal { position: fixed; inset: 0; background: rgba(4,7,12,.7); display: none; align-items: center; justify-content: center; z-index: 10; padding: 16px; }
+#modal.show { display: flex; }
+#modal .box { background: var(--panel); border: 1px solid var(--line-2); border-radius: 12px; width: min(900px, 100%); max-height: 86vh; display: flex; flex-direction: column; }
+#modal .mh { display: flex; padding: 10px 14px; border-bottom: 1px solid var(--line); font-weight: 650; }
+#modal .mb { overflow: auto; padding: 12px 14px; }
+
+.chip { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 1100px) {
+  html, body { height: auto; }
+  main { height: auto; grid-template-columns: 1fr 1fr; }
+  section.pane { height: 78vh; border-bottom: 1px solid var(--line); }
+  section.pane.loop { grid-column: 1 / -1; grid-row: 1; height: 92vh; border-right: 0; }
+}
+@media (max-width: 720px) {
+  header { height: auto; min-height: 52px; flex-wrap: wrap; padding: 8px 16px; row-gap: 8px; } .meta { display: none; }
+  .status { order: 5; }
+  main { display: block; height: auto; }
+  section.pane { height: 80vh; border-right: 0; border-bottom: 1px solid var(--line); }
+  .stats { grid-template-columns: repeat(2, 1fr); }
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><div class="logo"></div>hx</div>
+  <div class="meta">
+    <span class="chip">model <b id="m-model">…</b></span>
+    <span class="chip" id="m-store-chip">memory <b id="m-store">…</b></span>
+    <span class="chip">cwd <b id="m-cwd">…</b></span>
+    <span class="chip">harness <b id="m-hv">v0</b></span>
+  </div>
+  <div class="spacer"></div>
+  <div class="toggle">memory <button class="switch on" id="t-memory" title="recall + self-review"></button></div>
+  <div class="toggle">auto-approve <button class="switch" id="t-approve" title="run shell commands without asking"></button></div>
+  <div class="status" id="status"><span class="dot"></span><span id="status-t">connecting…</span></div>
+</header>
+
+<main>
+  <!-- ============ chat -->
+  <section class="pane">
+    <div class="pane-h">Conversation <span class="sub" id="chat-sub"></span></div>
+    <div class="scroll" id="chat-scroll"><div id="chat"></div></div>
+    <div class="composer">
+      <textarea id="input" placeholder="Ask the agent to build or fix something…  (Enter to send, Shift+Enter for a new line)"></textarea>
+      <div class="row" id="failbox">
+        <input id="failnote" placeholder="What went wrong? e.g. the snake passes through walls">
+        <button class="btn danger" id="b-failgo">Flag &amp; learn</button>
+      </div>
+      <div class="row">
+        <button class="btn primary" id="b-send">Send</button>
+        <button class="btn danger" id="b-stop" disabled>Stop</button>
+        <button class="btn" id="b-retry" title="Re-run the last task with a fresh context; memory carries over">↻ Retry</button>
+        <button class="btn danger" id="b-fail" title="Tell the agent its last result was wrong">✗ Flag failure</button>
+        <button class="btn mem" id="b-reflect" title="Force a self-review of the last turn">🧠 Review</button>
+        <button class="btn" id="b-clear" title="Forget the conversation (not the memory)">Clear</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ loop -->
+  <section class="pane loop">
+    <div class="pane-h">Agent loop · live <span class="sub" id="loop-sub">idle</span></div>
+    <div class="graph-wrap">
+      <svg id="graph" viewBox="0 0 720 236" aria-label="agent loop">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2e3d54"/></marker>
+          <marker id="arrowa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#5ab0ff"/></marker>
+          <filter id="glow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="4" result="b"/><feFlood flood-color="#5ab0ff" flood-opacity=".55"/><feComposite in2="b" operator="in"/><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+          <filter id="glowm" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="4" result="b"/><feFlood flood-color="#c38bff" flood-opacity=".6"/><feComposite in2="b" operator="in"/><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        </defs>
+        <!-- edges -->
+        <path class="edge" id="e-task-recall" d="M112,52 L148,52"/>
+        <path class="edge" id="e-recall-assemble" d="M252,52 L288,52"/>
+        <path class="edge" id="e-assemble-llm" d="M392,52 L428,52"/>
+        <path class="edge" id="e-llm-tools" d="M532,42 C560,30 572,30 600,42"/>
+        <path class="edge" id="e-tools-llm" d="M600,64 C572,76 560,76 532,64"/>
+        <path class="edge" id="e-llm-answer" d="M480,76 L480,154"/>
+        <path class="edge" id="e-answer-review" d="M428,178 L392,178"/>
+        <path class="edge" id="e-review-memory" d="M288,178 L252,178"/>
+        <path class="edge next" id="e-memory-next" d="M148,178 C80,178 60,120 112,98 C140,88 250,88 300,76"/>
+        <text class="elabel" x="560" y="24">tool calls</text>
+        <text class="elabel" x="556" y="92">results</text>
+        <text class="elabel" x="486" y="120">no tools → answer</text>
+        <text class="elabel" x="20" y="132">next turn</text>
+        <!-- nodes -->
+        <g class="node" id="n-task"><rect x="8" y="29" width="104" height="46"/><text class="title" x="20" y="48">① Task</text><text class="sub" x="20" y="64" id="s-task">waiting</text></g>
+        <g class="node" id="n-recall"><rect x="148" y="29" width="104" height="46"/><text class="title" x="160" y="48">② Recall</text><text class="sub" x="160" y="64" id="s-recall">—</text></g>
+        <g class="node" id="n-assemble"><rect x="288" y="29" width="104" height="46"/><text class="title" x="300" y="48">③ Assemble</text><text class="sub" x="300" y="64" id="s-assemble">—</text></g>
+        <g class="node" id="n-llm"><rect x="428" y="29" width="104" height="46"/><text class="title" x="440" y="48">④ Think</text><text class="sub" x="440" y="64" id="s-llm">—</text></g>
+        <g class="node" id="n-tools"><rect x="600" y="29" width="112" height="46"/><text class="title" x="612" y="48">⑤ Act</text><text class="sub" x="612" y="64" id="s-tools">—</text></g>
+        <g class="node" id="n-answer"><rect x="428" y="155" width="104" height="46"/><text class="title" x="440" y="174">⑥ Answer</text><text class="sub" x="440" y="190" id="s-answer">—</text></g>
+        <g class="node" id="n-review"><rect x="288" y="155" width="104" height="46"/><text class="title" x="300" y="174">⑦ Self-review</text><text class="sub" x="300" y="190" id="s-review">—</text></g>
+        <g class="node" id="n-memory"><rect x="148" y="155" width="104" height="46"/><text class="title" x="160" y="174">⑧ Memory</text><text class="sub" x="160" y="190" id="s-memory">—</text></g>
+        <text class="elabel" x="292" y="224" id="g-foot"></text>
+      </svg>
+      <div class="stats">
+        <div class="stat"><div class="k">context</div><div class="v" id="st-ctx">0 tok</div><div class="bar" id="st-ctxbar"><i></i></div></div>
+        <div class="stat"><div class="k">step</div><div class="v" id="st-step">0</div></div>
+        <div class="stat"><div class="k">tokens · turn</div><div class="v" id="st-tok">0</div></div>
+        <div class="stat"><div class="k">elapsed</div><div class="v" id="st-time">0s</div></div>
+      </div>
+    </div>
+    <div class="scroll" id="tl-scroll"><div id="timeline"><div class="empty">Every step the agent takes shows up here: what it recalled, the exact prompt it assembled, each model call, each tool call and its output, and what the self-review decided to remember.</div></div></div>
+  </section>
+
+  <!-- ============ memory -->
+  <section class="pane">
+    <div class="pane-h">Self-improvement memory <span class="sub" id="mem-sub"></span></div>
+    <div class="tabs">
+      <button class="tab on" data-tab="harness">Harness</button>
+      <button class="tab" data-tab="cases">Cases<span class="n" id="n-cases"></span></button>
+      <button class="tab" data-tab="history">Versions<span class="n" id="n-hist"></span></button>
+      <button class="tab" data-tab="traces">Traces</button>
+    </div>
+    <div class="scroll"><div id="mem"></div></div>
+  </section>
+</main>
+
+<div id="modal"><div class="box"><div class="mh"><span id="modal-t"></span><span class="spacer" style="flex:1"></span><button class="btn" id="modal-x">Close</button></div><div class="mb" id="modal-b"></div></div></div>
+
+<script>
+const TOKEN = "__HX_TOKEN__";
+const $ = (s, r = document) => r.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmtTok = (n) => n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n || 0);
+const fmtMs = (ms) => ms >= 1000 ? (ms / 1000).toFixed(1) + "s" : (ms || 0) + "ms";
+const clock = (t) => new Date(t * 1000).toLocaleTimeString([], {hour12: false});
+function md(text) {
+  const t = String(text ?? "");
+  if (window.marked && window.DOMPurify) return DOMPurify.sanitize(marked.parse(t, {breaks: true}));
+  return "<pre class='blk'>" + esc(t) + "</pre>";
+}
+async function api(path, body) {
+  const opt = {headers: {"X-HX-Token": TOKEN, "Content-Type": "application/json"}};
+  if (body !== undefined) { opt.method = "POST"; opt.body = JSON.stringify(body); }
+  const r = await fetch(path, opt);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok && j.message) toast(j.message);
+  return j;
+}
+function toast(text) { addChat("notice", esc(text)); }
+
+/* ================= state */
+const S = { busy: false, memory: true, approve: false, budget: 4000, turn: null, timer: null,
+            memTab: "harness", memData: null, flash: new Set(), toolRows: {}, openCase: null, caseView: "rendered" };
+
+/* ================= header */
+async function loadState() {
+  const st = await api("/api/state");
+  $("#m-model").textContent = st.model;
+  $("#m-store").textContent = st.store.replace(/^atlas:/, "Atlas · ").replace(/^local:/, "local · ");
+  $("#m-store-chip").classList.toggle("atlas", st.store.startsWith("atlas"));
+  $("#m-cwd").textContent = st.workdir.split("/").slice(-2).join("/");
+  $("#m-cwd").parentElement.title = st.workdir;
+  $("#m-hv").textContent = "v" + st.harness_version;
+  S.memory = st.memory; S.approve = st.auto_approve; S.budget = st.context_budget;
+  $("#t-memory").classList.toggle("on", S.memory);
+  $("#t-approve").classList.toggle("on", S.approve);
+  setBusy(st.busy);
+}
+function setBusy(b) {
+  S.busy = b;
+  $("#b-stop").disabled = !b;
+  for (const id of ["#b-retry", "#b-fail", "#b-reflect", "#b-clear"]) $(id).disabled = b;
+  if (!b) setStatus("idle", "");
+}
+function setStatus(text, cls) {
+  $("#status-t").textContent = text;
+  $("#status").className = "status " + (cls || "");
+  $("#loop-sub").textContent = text;
+}
+
+/* ================= chat */
+function addChat(cls, html) {
+  const d = document.createElement("div");
+  d.className = "msg " + cls;
+  d.innerHTML = html;
+  $("#chat").appendChild(d);
+  const sc = $("#chat-scroll"); sc.scrollTop = sc.scrollHeight;
+  return d;
+}
+function addToolChip(ev) {
+  const d = document.createElement("div");
+  const cls = ev.failure ? "bad" : (!ev.ok ? "benign" : "");
+  d.className = "toolchip " + cls;
+  d.innerHTML = `<span>●</span><span class="n">${esc(ev.name)}</span><span class="x">${esc(ev.summary)}</span><span class="s">${ev.ok ? "✓" : (ev.failure ? "✗ " + esc(ev.kind) : "~")}</span>`;
+  $("#chat").appendChild(d);
+  const sc = $("#chat-scroll"); sc.scrollTop = sc.scrollHeight;
+}
+
+/* ================= graph */
+const NODES = ["task", "recall", "assemble", "llm", "tools", "answer", "review", "memory"];
+const EDGES = ["task-recall", "recall-assemble", "assemble-llm", "llm-tools", "tools-llm", "llm-answer", "answer-review", "review-memory", "memory-next"];
+function node(n, state, sub) {
+  const g = $("#n-" + n);
+  g.classList.remove("active", "done", "fail", "skip", "memact", "memdone");
+  if (state) for (const c of state.split(" ")) g.classList.add(c);
+  if (sub !== undefined) $("#s-" + n).textContent = sub.length > 17 ? sub.slice(0, 16) + "…" : sub;
+}
+function flow(edge, cls = "flow") {
+  for (const e of EDGES) $("#e-" + e).classList.remove("flow", "memflow");
+  if (edge) $("#e-" + edge).classList.add(cls);
+}
+function resetGraph() {
+  for (const n of NODES) node(n, "", "—");
+  flow(null);
+  $("#g-foot").textContent = "";
+}
+function stats() {
+  const t = S.turn; if (!t) return;
+  $("#st-step").textContent = t.step;
+  $("#st-tok").textContent = fmtTok(t.tokens);
+  $("#st-ctx").textContent = fmtTok(t.ctx) + " / " + fmtTok(S.budget);
+  const pct = Math.min(100, (t.ctx / S.budget) * 100);
+  $("#st-ctxbar i").style.width = pct + "%";
+  $("#st-ctxbar").classList.toggle("hot", pct > 85);
+}
+function tick() {
+  if (!S.turn) return;
+  const end = S.turn.end || Date.now() / 1000;
+  $("#st-time").textContent = Math.max(0, Math.round(end - S.turn.start)) + "s";
+}
+
+/* ================= timeline */
+function tlEmptyClear() { const e = $("#timeline .empty"); if (e) e.remove(); }
+function addEv({t, icon, title, detail = "", right = "", cls = "", body = null, key = null}) {
+  tlEmptyClear();
+  const d = document.createElement("div");
+  d.className = "ev " + cls + (body ? " has-body" : "");
+  d.innerHTML = `<div class="head"><span class="ts">${clock(t)}</span><span class="ic">${icon}</span>
+    <span class="ti"><b>${esc(title)}</b>${detail ? ` <span class="d">${detail}</span>` : ""}</span>
+    <span class="rt">${right}${body ? '<span class="caret">▸</span>' : ""}</span></div>
+    <div class="body"></div>`;
+  if (body) {
+    d.querySelector(".body").innerHTML = body;
+    d.querySelector(".head").addEventListener("click", () => {
+      d.classList.toggle("open");
+      d.querySelector(".caret").textContent = d.classList.contains("open") ? "▾" : "▸";
+    });
+  }
+  $("#timeline").appendChild(d);
+  const sc = $("#tl-scroll");
+  if (sc.scrollHeight - sc.scrollTop - sc.clientHeight < 260) sc.scrollTop = sc.scrollHeight;
+  if (key) S.toolRows[key] = d;
+  return d;
+}
+const blk = (label, text) => `<div class="kv">${esc(label)}</div><pre class="blk">${esc(text)}</pre>`;
+const jsonBlk = (label, obj) => blk(label, JSON.stringify(obj, null, 2));
+
+/* ================= events */
+function handle(e) {
+  const d = e.data || {}, t = e.t;
+  switch (e.kind) {
+    case "user_message":
+      addChat("user", (d.retry ? '<span class="tag">↻ retry — fresh context, same memory</span>' : "") + esc(d.text));
+      break;
+    case "user_feedback":
+      addChat("user", '<span class="tag">✗ flagged as failure</span>' + esc(d.text));
+      addEv({t, icon: "✗", title: "User flagged the last result as wrong", detail: esc(d.text), cls: "fail"});
+      break;
+    case "turn_start":
+      S.turn = {start: t, end: null, step: 0, tokens: 0, ctx: 0, tools: 0, fails: 0};
+      S.toolRows = {};
+      resetGraph();
+      tlEmptyClear();
+      $("#timeline").insertAdjacentHTML("beforeend", `<div class="turnhdr">turn · ${clock(t)}${d.memory ? "" : " · memory off"}</div>`);
+      node("task", "done", d.task.slice(0, 30));
+      flow("task-recall");
+      setStatus("recalling", "busy"); setBusy(true);
+      addEv({t, icon: "▶", title: "Turn started", detail: esc(d.task.slice(0, 160)), right: "harness v" + d.harness_version});
+      break;
+    case "recall_start":
+      node("recall", "active", `scan ${d.candidates.length}`);
+      addEv({t, icon: "🔎", title: `Recall: a cheap model reads ${d.candidates.length} case description(s)`,
+        detail: esc(d.model), body: blk("candidates (only these one-liners are read)", d.candidates.map(c => `- ${c.id}: ${c.description}`).join("\n") || "(none)")
+          + (d.already_surfaced.length ? blk("already surfaced this session", d.already_surfaced.join(", ")) : "")});
+      break;
+    case "recall_done":
+      node("recall", "done", `${d.selected.length}/${d.n_candidates} loaded`);
+      flow("recall-assemble");
+      addEv({t, icon: "🔎", title: d.selected.length ? `Recall loaded ${d.selected.length} case(s)` : "Recall loaded nothing (unrelated → skip)",
+        detail: esc(d.selected.join(", ")), right: fmtMs(d.latency_ms), cls: d.selected.length ? "mem" : ""});
+      break;
+    case "recall_skip":
+      node("recall", "skip", d.reason.slice(0, 16));
+      flow("recall-assemble");
+      addEv({t, icon: "🔎", title: "Recall skipped", detail: esc(d.reason)});
+      break;
+    case "assemble":
+      node("assemble", "done", `${fmtTok(d.system_tokens)} tok · ${d.rules.length} rules`);
+      flow("assemble-llm");
+      S.turn && (S.turn.ctx = d.system_tokens + d.user_tokens);
+      addEv({t, icon: "🧩", title: "Context assembled",
+        detail: `harness v${d.harness_version} · ${d.rules.length} rule(s) · ${d.n_case_index} case(s) in index · ${d.loaded_cases.length} expanded`,
+        right: fmtTok(d.system_tokens + d.user_tokens) + " tok",
+        body: (d.rules.length ? `<div class="kv">harness rules in context</div>` + d.rules.map(r => `<div><span class="pill ${r.status}">${r.status}</span><code>${esc(r.id)}</code> ${esc(r.text)}</div>`).join("") : "")
+          + blk("system prompt (exactly what the model sees)", d.system_prompt) + blk("user message", d.user_message)});
+      stats();
+      break;
+    case "compact":
+      addEv({t, icon: "🗜", title: `Context compacted: freed ${fmtTok(d.freed_tokens)} tokens`, detail: `now ${fmtTok(d.context_tokens)} / budget ${fmtTok(d.budget)}`, cls: "warn"});
+      break;
+    case "llm_start":
+      if (S.turn) { S.turn.step = d.step; S.turn.ctx = d.context_tokens; stats(); }
+      node("llm", "active", `step ${d.step} · ${fmtTok(d.context_tokens)}`);
+      node("tools", $("#n-tools").classList.contains("fail") ? "done fail" : ($("#s-tools").textContent === "—" ? "" : "done"));
+      flow(d.step === 1 ? "assemble-llm" : "tools-llm");
+      setStatus(`thinking · step ${d.step}`, "busy");
+      addEv({t, icon: "🤖", title: `Model call #${d.step}`, detail: `${esc(d.model)} · ${d.n_messages} messages`, right: fmtTok(d.context_tokens) + " tok in", cls: "pending", key: "llm" + d.step});
+      break;
+    case "llm_end": {
+      if (S.turn) { S.turn.tokens += (d.prompt_tokens || 0) + (d.completion_tokens || 0); stats(); }
+      const row = S.toolRows["llm" + d.step]; if (row) row.remove();
+      const next = d.error ? "malformed output → nudge" : d.tool_calls.length ? `→ ${d.tool_calls.length} tool call(s)` : "→ final answer";
+      node("llm", "done", `step ${d.step} ${d.tool_calls.length ? "→ act" : ""}`);
+      if (d.tool_calls.length) flow("llm-tools");
+      addEv({t, icon: "🤖", title: `Model replied (step ${d.step}) ${next}`,
+        detail: esc(d.tool_calls.map(c => `${c.name}(${c.summary})`).join("  ·  ").slice(0, 220)),
+        right: `${fmtMs(d.latency_ms)} · ${fmtTok(d.prompt_tokens)}→${fmtTok(d.completion_tokens)}`,
+        cls: d.error ? "warn" : "",
+        body: (d.content ? blk("assistant text", d.content) : "") + (d.error ? blk("provider error", d.error) : "")
+          + jsonBlk("tool calls", d.tool_calls) + `<div class="kv">finish_reason</div><code>${esc(d.finish_reason || "-")}</code>`});
+      break;
+    }
+    case "tool_start":
+      node("tools", "active", `${d.name}`);
+      setStatus(`running ${d.name}`, "busy");
+      addEv({t, icon: "🛠", title: `${d.name}`, detail: esc(d.summary), right: "running…", cls: "pending", key: "tool" + d.step});
+      break;
+    case "tool_end": {
+      const row = S.toolRows["tool" + d.step]; if (row) row.remove();
+      if (S.turn) { S.turn.tools++; if (d.failure) S.turn.fails++; }
+      const tt = S.turn || {tools: 0, fails: 0};
+      node("tools", d.failure || tt.fails ? "done fail" : "done", `${tt.tools} calls${tt.fails ? " · " + tt.fails + " ✗" : ""}`);
+      flow("tools-llm");
+      addEv({t, icon: d.ok ? "✓" : (d.failure ? "✗" : "~"),
+        title: `${d.name} ${d.ok ? "ok" : (d.failure ? "FAILED (" + d.kind + ")" : "non-zero (benign)")}`,
+        detail: esc(d.summary), right: fmtMs(d.latency_ms), cls: d.ok ? "" : (d.failure ? "fail" : "warn"),
+        body: blk("output (what the model sees next)", d.output) + (d.failure ? `<div class="kv">signal</div><span class="pill mem">failure recorded → triggers self-review</span>` : "")});
+      addToolChip(d);
+      break;
+    }
+    case "nudge":
+      addEv({t, icon: "⚠", title: "Harness nudge: " + d.reason, cls: "warn", body: blk("injected message", d.text)});
+      break;
+    case "waiting":
+      setStatus(`${d.reason}: waiting ${Math.round(d.seconds)}s`, "wait");
+      addEv({t, icon: "⏳", title: `${d.reason} — waiting ${d.seconds}s`, detail: "provider limit; the turn resumes automatically", cls: "warn"});
+      break;
+    case "thought":
+      addChat("thought", esc(d.text));
+      break;
+    case "final":
+      addChat("assistant md", md(d.text));
+      break;
+    case "notice": addChat("notice", esc(d.text)); addEv({t, icon: "ℹ", title: d.text, cls: "warn"}); break;
+    case "error": addChat("error", esc(d.text)); addEv({t, icon: "⛔", title: "Error", detail: esc(d.text), cls: "fail"}); break;
+    case "turn_end":
+      if (S.turn) S.turn.end = t;
+      node("llm", "done");
+      node("answer", d.outcome === "ok" ? "done" : (d.outcome === "recovered" ? "done" : "done fail"), `${d.outcome}`);
+      flow("llm-answer");
+      addEv({t, icon: "■", title: `Turn ended: ${d.outcome}${d.abort_reason ? " (" + d.abort_reason + ")" : ""}`,
+        detail: `${d.steps} tool call(s) · ${d.failures} real failure(s) · ${fmtTok(d.prompt_tokens + d.completion_tokens)} tokens`,
+        right: fmtMs(d.latency_ms), cls: d.outcome === "ok" ? "ok" : (d.outcome === "recovered" ? "warn" : "fail")});
+      tick();
+      break;
+    case "review_skip":
+      node("review", "skip", "skipped"); node("memory", "skip", "unchanged");
+      flow(null);
+      addEv({t, icon: "🧠", title: "Self-review skipped", detail: esc(d.reason)});
+      break;
+    case "review_start":
+      node("review", "memact", d.why.slice(0, 18)); flow("answer-review", "memflow");
+      setStatus("self-review", "review"); setBusy(true);
+      addEv({t, icon: "🧠", title: "Self-review: the agent analyses its own trace", detail: esc(d.why), right: esc(d.model), cls: "mem pending", key: "review",
+        body: blk("what the reviewer sees", d.review_input) + `<details><summary class="kv" style="cursor:pointer">reviewer instructions</summary><pre class="blk">${esc(d.review_system)}</pre></details>`});
+      break;
+    case "review_result": {
+      const row = S.toolRows["review"]; if (row) row.classList.remove("pending");
+      node("review", "memdone", d.action);
+      addEv({t, icon: "🧠", title: `Decision: ${d.action}`, detail: esc(d.analysis), right: fmtMs(d.latency_ms), cls: "mem",
+        body: (d.action.includes("rule") ? jsonBlk("rule", d.rule) : "") + (d.action.includes("case") ? jsonBlk("case", d.case) : "")
+          + jsonBlk("gate verdicts (rules)", d.rule_verdicts) + jsonBlk("verdicts (cases)", d.case_verdicts)});
+      break;
+    }
+    case "review_failed":
+      node("review", "fail", "failed"); addEv({t, icon: "🧠", title: "Self-review failed (nothing learned)", cls: "warn"});
+      break;
+    case "memory_write": {
+      const acts = d.actions || [];
+      const changed = acts.length > 0;
+      node("memory", changed ? "memact" : "skip", changed ? acts[0].split(" ").slice(0, 2).join(" ") : "nothing new");
+      flow(changed ? "review-memory" : null, "memflow");
+      if (changed) setTimeout(() => { node("memory", "memdone"); flow("memory-next", "memflow"); $("#g-foot").textContent = "next turn starts from the improved harness"; }, 900);
+      (d.touched || []).forEach(id => S.flash.add(id));
+      addChat("memory", `<div class="t">🧠 self-review</div><div>${esc(d.action === "forget" ? "removed by you" : "")}</div>` +
+        (acts.length ? acts.map(a => `<div class="a">${esc(a)}</div>`).join("") : `<div class="a">nothing worth remembering</div>`));
+      addEv({t, icon: "💾", title: changed ? "Memory updated" : "Memory unchanged", detail: esc(acts.join("  ·  ")), cls: "mem",
+        right: d.harness_after !== undefined && d.harness_after !== d.harness_before ? `harness v${d.harness_before}→v${d.harness_after}` : ""});
+      refreshMemory(changed ? (acts.some(a => a.startsWith("case")) ? "cases" : "harness") : null);
+      loadState();
+      break;
+    }
+    case "confirm_request": {
+      setStatus("waiting for your approval", "wait");
+      const box = addChat("confirm", `✋ <b>The agent wants to:</b><code>${esc(d.prompt)}</code>
+        <div class="row"><button class="btn primary" data-a="yes">Approve</button><button class="btn" data-a="always">Always (this session)</button><button class="btn danger" data-a="no">Deny</button></div>`);
+      box.dataset.cid = d.id;
+      box.querySelectorAll("button").forEach(b => b.addEventListener("click", async () => {
+        box.querySelectorAll("button").forEach(x => x.disabled = true);
+        await api("/api/confirm", {id: d.id, answer: b.dataset.a});
+        if (b.dataset.a === "always") { S.approve = true; $("#t-approve").classList.add("on"); }
+      }));
+      addEv({t, icon: "✋", title: "Waiting for approval", detail: esc(d.prompt), cls: "warn"});
+      break;
+    }
+    case "confirm_result": {
+      const box = document.querySelector(`.confirm[data-cid="${d.id}"]`);
+      if (box) { box.querySelectorAll("button").forEach(x => x.disabled = true); box.insertAdjacentHTML("beforeend", `<div style="margin-top:6px;color:var(--${d.approved ? "ok" : "bad"})">${d.approved ? "approved" : "denied"}</div>`); }
+      break;
+    }
+    case "confirm_auto": break;
+    case "cleared":
+      addChat("notice", "— conversation cleared" + (d.reason ? `: ${esc(d.reason)}` : "") + " —");
+      break;
+    case "settings":
+      if ("memory" in d) { S.memory = d.memory; $("#t-memory").classList.toggle("on", d.memory); }
+      if ("auto_approve" in d) { S.approve = d.auto_approve; $("#t-approve").classList.toggle("on", d.auto_approve); }
+      break;
+    case "idle":
+      setBusy(false);
+      flow(S.flash.size ? "memory-next" : null, "memflow");
+      refreshMemory(null);
+      break;
+  }
+}
+
+/* ================= memory pane */
+async function refreshMemory(focusTab) {
+  S.memData = await api("/api/memory");
+  const m = S.memData;
+  const live = m.cases.filter(c => c.status === "active").length;
+  $("#n-cases").textContent = live;
+  $("#n-hist").textContent = m.history.length;
+  $("#mem-sub").textContent = `${m.harness.rules.filter(r => r.status !== "retired").length} rules · ${live} cases`;
+  if (focusTab) setTab(focusTab); else renderMem();
+}
+function setTab(tab) {
+  S.memTab = tab;
+  document.querySelectorAll(".tab").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
+  renderMem();
+}
+function flashOn(el, id) {
+  if (S.flash.has(id)) { el.classList.add("flash"); setTimeout(() => { el.classList.remove("flash"); S.flash.delete(id); }, 6000); }
+}
+function caseFile(c) {
+  const wrap = document.createElement("div");
+  wrap.className = "file";
+  wrap.innerHTML = `<div class="fh"><span>📄</span><span class="fn">${esc(c.file)}</span><span class="sp"></span>
+    <span class="pill ${c.status === "active" ? "active" : "retired"}">${c.status}</span>
+    <span class="seg"><button data-v="rendered">rendered</button><button data-v="raw">raw .md</button></span></div><div class="fb"></div>`;
+  const body = wrap.querySelector(".fb");
+  const draw = () => {
+    wrap.querySelectorAll(".seg button").forEach(b => b.classList.toggle("on", b.dataset.v === S.caseView));
+    if (S.caseView === "raw") body.innerHTML = `<pre class="blk" style="max-height:none">${esc(c.markdown)}</pre>`;
+    else body.innerHTML = `<div style="color:var(--dim);margin-bottom:6px">${esc(c.description)}</div><div class="md">${md(c.body)}</div>
+      <div style="margin-top:8px">${(c.tags || []).map(t => `<span class="pill">${esc(t)}</span>`).join("")}
+      <span class="pill">used ${c.uses}×</span><span class="pill">helped ${c.helped}</span><span class="pill">misleading ${c.misleading}</span></div>
+      <div class="r" style="color:var(--faint);font-size:11px;margin-top:6px">from trace ${esc(c.source_trace || "-")} · updated ${new Date(c.updated_at).toLocaleString()}</div>`;
+  };
+  wrap.querySelectorAll(".seg button").forEach(b => b.addEventListener("click", (ev) => { ev.stopPropagation(); S.caseView = b.dataset.v; draw(); }));
+  draw();
+  return wrap;
+}
+function renderMem() {
+  const m = S.memData, root = $("#mem");
+  if (!m) { root.innerHTML = '<div class="empty">loading…</div>'; return; }
+  root.innerHTML = "";
+  if (S.memTab === "harness") {
+    const f = document.createElement("div");
+    f.className = "file";
+    f.innerHTML = `<div class="fh"><span>📄</span><span class="fn">HARNESS.md</span><span class="sp"></span><span>v${m.harness.version} · loaded every turn</span></div><div class="fb md">${md(m.harness_md)}</div>`;
+    root.appendChild(f);
+    const touched = m.harness.rules.some(r => S.flash.has(r.rule_id));
+    if (touched) { f.classList.add("flash"); setTimeout(() => f.classList.remove("flash"), 6000); }
+    root.insertAdjacentHTML("beforeend", `<div class="empty" style="text-align:left;padding:4px 2px">General rules are short, apply beyond one bug, and must prove useful: a new rule starts as <span class="pill trial">trial</span>, is promoted to <span class="pill active">active</span> when the next relevant turn avoids the failure, and is retired after repeated strikes.</div>`);
+    const retired = m.harness.rules.filter(r => r.status === "retired");
+    if (retired.length) root.insertAdjacentHTML("beforeend", `<div class="kv">retired rules</div>` + retired.map(r => `<div style="color:var(--faint);font-size:12px"><code>${esc(r.rule_id)}</code> ${esc(r.text)}</div>`).join(""));
+  } else if (S.memTab === "cases") {
+    if (!m.cases.length) { root.innerHTML = '<div class="empty">No cases yet. When a task fails, the self-review may file one incident note here — one markdown file per case, loaded only when a future task looks related.</div>'; return; }
+    root.insertAdjacentHTML("beforeend", `<div class="kv" style="margin-top:0">index (the only part that sits in context every turn)</div><pre class="blk" style="margin-bottom:12px">${esc(m.cases.filter(c => c.status === "active").map(c => `- ${c.case_id}: ${c.description}`).join("\n") || "(empty)")}</pre>`);
+    for (const c of m.cases) {
+      if (S.openCase === c.case_id || S.flash.has(c.case_id)) {
+        const f = caseFile(c); root.appendChild(f); flashOn(f, c.case_id); S.openCase = c.case_id;
+        continue;
+      }
+      const row = document.createElement("div");
+      row.className = "case-row" + (c.status !== "active" ? " retired" : "");
+      row.innerHTML = `<div class="id">📄 ${esc(c.file)}</div><div class="ds">${esc(c.description)}</div>
+        <span class="pill">used ${c.uses}×</span><span class="pill">helped ${c.helped}</span>${c.status !== "active" ? '<span class="pill retired">retired</span>' : ""}`;
+      row.addEventListener("click", () => { S.openCase = S.openCase === c.case_id ? null : c.case_id; renderMem(); });
+      root.appendChild(row);
+    }
+  } else if (S.memTab === "history") {
+    root.innerHTML = `<div class="hist">` + m.history.map(h => `<div class="hv"><div class="v">v${h.version} <span class="pill">${h.n_rules} rules</span></div>
+      <div class="c">${esc(h.change)}</div>${h.reason ? `<div class="r">${esc(h.reason)}</div>` : ""}
+      <div class="r">${new Date(h.created_at).toLocaleString()}${h.trace_id ? " · trace " + esc(h.trace_id) : ""}</div></div>`).join("") + `</div>`;
+  } else {
+    root.innerHTML = '<div class="empty">loading…</div>';
+    api("/api/traces").then(list => {
+      if (S.memTab !== "traces") return;
+      root.innerHTML = list.length ? "" : '<div class="empty">No turns yet.</div>';
+      for (const tr of list) {
+        const el = document.createElement("div");
+        el.className = "tr";
+        const mem = (tr.memory_actions || []).filter(a => !a.startsWith("analysis:")).join(" · ");
+        el.innerHTML = `<div class="top"><span class="o ${tr.outcome}">${tr.outcome}</span><span class="task">${esc(tr.task)}</span></div>
+          <div class="m">${new Date(tr.created_at).toLocaleString()} · v${tr.harness_version} · ${tr.steps} steps · ${tr.failures} ✗ · cases ${tr.loaded_case_ids.length} · sys ${tr.system_tokens} tok</div>
+          ${mem ? `<div class="m" style="color:var(--mem)">${esc(mem)}</div>` : ""}`;
+        el.addEventListener("click", async () => {
+          const full = await api("/api/trace/" + tr.trace_id);
+          openModal("trace " + tr.trace_id, `<pre class="blk" style="max-height:none">${esc(JSON.stringify(full, null, 2))}</pre>`);
+        });
+        root.appendChild(el);
+      }
+    });
+  }
+}
+function openModal(title, html) { $("#modal-t").textContent = title; $("#modal-b").innerHTML = html; $("#modal").classList.add("show"); }
+$("#modal-x").addEventListener("click", () => $("#modal").classList.remove("show"));
+$("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") $("#modal").classList.remove("show"); });
+document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => setTab(b.dataset.tab)));
+
+/* ================= controls */
+async function send() {
+  const v = $("#input").value.trim();
+  if (!v) return;
+  if (S.busy) { toast("agent is busy — wait for this turn or press Stop"); return; }
+  $("#input").value = "";
+  const r = await api("/api/chat", {text: v});
+  if (r.ok === false) $("#input").value = v;
+}
+$("#b-send").addEventListener("click", send);
+$("#input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
+$("#b-stop").addEventListener("click", () => api("/api/command", {cmd: "stop"}));
+$("#b-retry").addEventListener("click", () => api("/api/command", {cmd: "retry"}));
+$("#b-reflect").addEventListener("click", () => api("/api/command", {cmd: "reflect"}));
+$("#b-clear").addEventListener("click", () => api("/api/command", {cmd: "clear"}));
+$("#b-fail").addEventListener("click", () => { $("#failbox").classList.toggle("show"); $("#failnote").focus(); });
+async function flagFail() { const note = $("#failnote").value.trim(); $("#failnote").value = ""; $("#failbox").classList.remove("show"); await api("/api/command", {cmd: "fail", arg: note}); }
+$("#b-failgo").addEventListener("click", flagFail);
+$("#failnote").addEventListener("keydown", (e) => { if (e.key === "Enter") flagFail(); });
+$("#t-memory").addEventListener("click", () => api("/api/command", {cmd: "memory", arg: S.memory ? "off" : "on"}));
+$("#t-approve").addEventListener("click", () => api("/api/command", {cmd: "auto_approve", arg: S.approve ? "off" : "on"}));
+
+/* ================= boot */
+(async function boot() {
+  await loadState();
+  await refreshMemory(null);
+  const es = new EventSource(`/api/events?token=${encodeURIComponent(TOKEN)}&since=0`);
+  es.onmessage = (m) => { try { handle(JSON.parse(m.data)); } catch (err) { console.error(err, m.data); } };
+  es.onopen = () => { if (!S.busy) setStatus("idle", ""); };
+  es.onerror = () => setStatus("reconnecting…", "wait");
+  S.timer = setInterval(tick, 1000);
+})();
+</script>
+</body>
+</html>

@@ -1,17 +1,35 @@
 [project]
-name = "rsi-harness"
-version = "0.1.0"
-description = "Recursive self-improving agent harness on MongoDB Atlas"
+name = "hx-agent"
+version = "0.2.0"
+description = "Terminal coding agent whose environment improves from its own failures (harness rules + case library on MongoDB Atlas)"
 requires-python = ">=3.11"
 readme = "README.md"
+dependencies = [
+  "openai>=1.50",
+  "pymongo>=4.10",
+  "certifi>=2024.0.0",
+  "python-dotenv>=1.0.1",
+  "pydantic>=2.9",
+  "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3"]
+
+[project.scripts]
+hx = "hx.cli:main"
 
 [tool.setuptools.packages.find]
-where = ["src", "."]
-include = ["rsi_harness*", "hx*"]
+where = ["."]
+include = ["hx*"]
+
+[tool.setuptools.package-data]
+hx = ["web/*.html"]
 
 [tool.pytest.ini_options]
-pythonpath = [".", "src"]
+pythonpath = ["."]
 testpaths = ["tests"]
+markers = ["atlas: needs MONGODB_URI", "live: calls the real LLM API"]
 
 [build-system]
 requires = ["setuptools>=69"]
